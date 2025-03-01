@@ -34,6 +34,12 @@ class KnowledgeBaseCreator():
         self.llm = Ollama(model="test")
         self.setup_transformations(self.llm)
 
+        try:
+            self.index = VectorStoreIndex.from_vector_store(self.vector_store, storage_context=self.storage_context, embed_model=self.hf_embeddings)
+        except:
+            print("No index found. Creating new index")
+            self.index = None
+
     def setup_transformations(self, llm):
         self.llm_transformations = llm
         self.text_splitter = SentenceSplitter(
@@ -45,10 +51,10 @@ class KnowledgeBaseCreator():
         self.qa_extractor = QuestionsAnsweredExtractor(llm=llm, questions=3)
         self.title_extractor = TitleExtractor(llm=llm, nodes=5)
 
-    async def create_index_from_web_runner(self):
+    async def create_index_from_web_runner(self, url):
         async with AsyncWebCrawler() as crawler:
             result = await crawler.arun(
-                url="https://www.nbcnews.com/business",
+                url=url,
             )
             # print(result.markdown)
             documents = [
@@ -75,12 +81,18 @@ class KnowledgeBaseCreator():
 
             # index = VectorStoreIndex(nodes, embed_model=hf_embeddings)
             # index.storage_context.persist(persist_dir="./test")
+            if not self.index:
+                print("Creating new index")
+                self.index = VectorStoreIndex([], storage_context=self.storage_context, embed_model=self.hf_embeddings)
 
-            self.index = VectorStoreIndex(nodes, storage_context=self.storage_context, embed_model=self.hf_embeddings)
+            # TODO: Check to see if node exists with the same title or url or other identifier
+            print("Inserting nodes")
+            self.index.insert_nodes(nodes)
+
             self.vector_store.persist(persist_path=self.db_path)
 
-    def create_index_from_web(self):
-        asyncio.run(self.create_index_from_web_runner())
+    def create_index_from_web(self, url):
+        asyncio.run(self.create_index_from_web_runner(url))
 
 
 class KnowledgeBase():
@@ -98,10 +110,11 @@ class KnowledgeBase():
 
     def query(self, query):
         start_time = time.time()
-        qa = self.index.as_query_engine(llm=self.llm_querying)
+        qa = self.index.as_query_engine(llm=self.llm_querying, similarity_top_k=2)
         response = qa.query(query)
         print(f"Time taken: {time.time() - start_time}")
         print(response)
+        print(len(response.source_nodes))
         # pprint.pprint(response.source_nodes)
         # pprint.pprint(response.__dict__)
 
@@ -127,6 +140,7 @@ def main():
     create_parser = subparsers.add_parser('create', help='Create a knowledge base')
     create_parser.add_argument('db_path', type=str, help='Path to the database')
     create_parser.add_argument('collection_name', type=str, help='Name of the collection')
+    create_parser.add_argument('url', type=str, help='URL to crawl')
 
     query_parser = subparsers.add_parser('query', help='Query the knowledge base')
     query_parser.add_argument('db_path', type=str, help='Path to the database')
@@ -137,7 +151,8 @@ def main():
 
     if args.command == "create":
         kb = KnowledgeBaseCreator(args.db_path, args.collection_name)
-        kb.create_index_from_web()
+        kb.create_index_from_web(args.url)
+        print(kb.chroma_collection.count())
     elif args.command == "query":
         kb = KnowledgeBase(args.db_path, args.collection_name)
         kb.query(args.query)
